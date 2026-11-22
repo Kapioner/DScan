@@ -1,0 +1,76 @@
+[workspace]
+resolver = "3"
+members = ["crates/*"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.85"
+license = "MIT"
+repository = "https://github.com/Kapioner/DScan1"
+
+[workspace.dependencies]
+# Crate'y wewnętrzne
+dscan-core = { path = "crates/core" }
+dscan-config = { path = "crates/config" }
+dscan-db = { path = "crates/db" }
+dscan-api = { path = "crates/api" }
+dscan-crypto = { path = "crates/crypto" }
+dscan-auth = { path = "crates/auth" }
+dscan-scanner = { path = "crates/scanner" }
+dscan-integrations = { path = "crates/integrations" }
+dscan-engine = { path = "crates/engine" }
+dscan-fingerprint = { path = "crates/fingerprint" }
+dscan-web = { path = "crates/web" }
+
+# Zależności zewnętrzne (wersje w jednym miejscu dla całego workspace)
+serde = { version = "1", features = ["derive"] }
+chrono = { version = "0.4", default-features = false, features = ["std", "clock", "serde"] }
+ipnet = { version = "2", features = ["serde"] }
+figment = { version = "0.10", features = ["toml", "env"] }
+serde_json = "1"
+toml = "0.8"
+clap = { version = "4", features = ["derive", "env"] }
+clap_complete = "4"
+clap_mangen = "0.2"
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "signal", "time", "process", "io-util", "sync"] }
+axum = { version = "0.8", features = ["multipart"] }
+tower = { version = "0.5", features = ["util"] }
+tower-http = { version = "0.6", features = ["trace", "limit", "set-header"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+utoipa = { version = "5", features = ["chrono"] }
+sqlx = { version = "0.8", default-features = false, features = ["runtime-tokio", "tls-rustls", "postgres", "migrate", "macros", "chrono", "ipnet"] }
+http-body-util = "0.1"
+aes-gcm = "0.10"
+argon2 = "0.5"
+# Włącza bezpieczne źródło losowości (OsRng) dla soli haseł.
+password-hash = { version = "0.5", features = ["getrandom"] }
+quick-xml = { version = "0.37", features = ["serialize", "overlapped-lists"] }
+csv = "1"
+hickory-resolver = "0.24"
+rpassword = "7"
+governor = "0.6"
+sha2 = "0.10"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+scraper = "0.20"
+askama = "0.12"
+serde_yaml = "0.9"
+regex = "1"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+tokio-rustls = { version = "0.26", default-features = false, features = ["ring", "tls12"] }
+x509-parser = "0.16"
+
+[workspace.lints.rust]
+unsafe_code = "forbid"
+
+[workspace.lints.clippy]
+# Zasada projektu: brak unwrap()/expect() w kodzie produkcyjnym (w testach dozwolone, patrz clippy.toml)
+unwrap_used = "deny"
+expect_used = "deny"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"

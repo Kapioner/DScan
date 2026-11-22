@@ -1,0 +1,39 @@
+[package]
+name = "dscan"
+description = "DScan (Defect Scan) — skanowanie i inwentaryzacja usług sieciowych."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dscan-config.workspace = true
+dscan-db.workspace = true
+dscan-api.workspace = true
+dscan-core.workspace = true
+dscan-crypto.workspace = true
+dscan-auth.workspace = true
+dscan-scanner.workspace = true
+dscan-integrations.workspace = true
+dscan-engine.workspace = true
+dscan-fingerprint.workspace = true
+dscan-web.workspace = true
+chrono.workspace = true
+ipnet.workspace = true
+rpassword.workspace = true
+clap.workspace = true
+clap_complete.workspace = true
+clap_mangen.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
+reqwest = { workspace = true, features = ["json"] }
+serde.workspace = true
+serde_json.workspace = true
+
+[dev-dependencies]
+toml.workspace = true
+
+[lints]
+workspace = true

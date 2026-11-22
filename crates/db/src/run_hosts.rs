@@ -1,0 +1,274 @@
+//! Odczyt wyników przebiegu: hosty z usługami, podstawowymi informacjami HTTP i detekcjami.
+
+use std::collections::HashMap;
+use std::net::IpAddr;
+
+use chrono::{DateTime, Utc};
+use dscan_core::models::{
+    CertificateInfo, Cookie, Detection, Evidence, Host, HostStatus, HttpHeader, HttpInfo, Protocol,
+    Redirect, Service, ServiceState,
+};
+
+use dscan_crypto::Cipher;
+
+use crate::columns::{HTTP_INFO_CERTIFICATE, HTTP_INFO_COOKIES, HTTP_INFO_HEADERS};
+use crate::{DbError, Encrypted, PgPool};
+
+type HostRow = (
+    i64,
+    IpAddr,
+    Vec<String>,
+    String,
+    DateTime<Utc>,
+    DateTime<Utc>,
+);
+type ServiceRow = (
+    i64,
+    i64,
+    i32,
+    String,
+    String,
+    Option<String>,
+    Option<String>,
+    Option<String>,
+    Vec<String>,
+);
+type HttpRow = (
+    i64,
+    String,
+    i32,
+    Option<String>,
+    Option<bool>,
+    Option<String>,
+    Option<Vec<u8>>,
+    Vec<u8>,
+    Option<i64>,
+    Option<i32>,
+    Vec<u8>,
+    String,
+);
+type DetectionRow = (i64, String, Option<String>, i16, String);
+
+/// Hosty przebiegu (bez pól szyfrowanych — banerów, nagłówków, ciasteczek, certyfikatów).
+pub async fn load_run_hosts(pool: &PgPool, run_id: i64) -> Result<Vec<Host>, DbError> {
+    load_hosts(pool, None, run_id).await
+}
+
+/// Jak [`load_run_hosts`], ale z odszyfrowanym certyfikatem TLS (widok szczegółów hosta, F5).
+pub async fn load_run_hosts_with_certificates(
+    pool: &PgPool,
+    cipher: &Cipher,
+    run_id: i64,
+) -> Result<Vec<Host>, DbError> {
+    load_hosts(pool, Some(cipher), run_id).await
+}
+
+async fn load_hosts(
+    pool: &PgPool,
+    cipher: Option<&Cipher>,
+    run_id: i64,
+) -> Result<Vec<Host>, DbError> {
+    let hosts: Vec<HostRow> = sqlx::query_as(
+        "SELECT id, ip, hostnames, status, first_seen, last_seen FROM hosts WHERE scan_run_id = $1 ORDER BY ip",
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await
+    .map_err(DbError::Query)?;
+    let services: Vec<ServiceRow> = sqlx::query_as(
+        "SELECT s.id, s.host_id, s.port, s.protocol, s.state, s.name, s.product, s.version, s.cpe \
+         FROM services s JOIN hosts h ON h.id = s.host_id WHERE h.scan_run_id = $1 ORDER BY s.port",
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await
+    .map_err(DbError::Query)?;
+    let http: Vec<HttpRow> = sqlx::query_as(
+        "SELECT i.service_id, i.url, i.status_code, i.title, i.tls_verified, i.favicon::text, i.certificate, i.headers, i.simhash, i.response_ms, i.cookies, i.redirect_chain::text FROM http_info i \
+         JOIN services s ON s.id = i.service_id JOIN hosts h ON h.id = s.host_id WHERE h.scan_run_id = $1",
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await
+    .map_err(DbError::Query)?;
+    let detections: Vec<DetectionRow> = sqlx::query_as(
+        "SELECT d.service_id, d.technology, d.version, d.confidence, d.evidence::text FROM detections d \
+         JOIN services s ON s.id = d.service_id JOIN hosts h ON h.id = s.host_id \
+         WHERE h.scan_run_id = $1 ORDER BY d.confidence DESC",
+    )
+    .bind(run_id)
+    .fetch_all(pool)
+    .await
+    .map_err(DbError::Query)?;
+    Ok(assemble(hosts, services, http, detections, cipher))
+}
+
+/// `Set-Cookie: SESJA=wartość; Path=/` → `SESJA=***; Path=/` - wartość ciasteczka jest poufna.
+fn mask_set_cookie(header: HttpHeader) -> HttpHeader {
+    if !header.name.eq_ignore_ascii_case("set-cookie") {
+        return header;
+    }
+    let (pair, attributes) = header
+        .value
+        .split_once(';')
+        .map_or((header.value.as_str(), ""), |(pair, rest)| (pair, rest));
+    let name = pair.split_once('=').map_or(pair, |(name, _)| name).trim();
+    let separator = if attributes.is_empty() { "" } else { ";" };
+    HttpHeader {
+        value: format!("{name}=***{separator}{attributes}"),
+        name: header.name,
+    }
+}
+
+/// Składa wiersze z czterech zapytań w hosty z usługami.
+fn assemble(
+    hosts: Vec<HostRow>,
+    services: Vec<ServiceRow>,
+    http: Vec<HttpRow>,
+    detections: Vec<DetectionRow>,
+    cipher: Option<&Cipher>,
+) -> Vec<Host> {
+    let mut http_by_service: HashMap<i64, HttpInfo> = http
+        .into_iter()
+        .map(
+            |(
+                id,
+                url,
+                status,
+                title,
+                tls_verified,
+                favicon,
+                certificate,
+                headers,
+                simhash,
+                response_ms,
+                cookies,
+                redirect_chain,
+            )| {
+                // Ciasteczka (poufne) tylko z kluczem; wartość (identyfikator sesji) nie wychodzi poza bazę.
+                let cookies = cipher
+                    .and_then(|cipher| {
+                        Encrypted::<Vec<Cookie>>::from_bytes(cookies)
+                            .open(cipher, &HTTP_INFO_COOKIES)
+                            .ok()
+                    })
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(|cookie| Cookie {
+                        value: "***".into(),
+                        ..cookie
+                    })
+                    .collect();
+                let redirect_chain: Vec<Redirect> =
+                    serde_json::from_str(&redirect_chain).unwrap_or_default();
+                // Nagłówki (poufne) tylko z kluczem — widok hosta i dowody dla DefectDojo.
+                let headers = cipher
+                    .and_then(|cipher| {
+                        Encrypted::<Vec<HttpHeader>>::from_bytes(headers)
+                            .open(cipher, &HTTP_INFO_HEADERS)
+                            .ok()
+                    })
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(mask_set_cookie)
+                    .collect();
+                // Certyfikat odszyfrowujemy tylko na żądanie (z kluczem); uszkodzony pomijamy.
+                let certificate = cipher.zip(certificate).and_then(|(cipher, bytes)| {
+                    Encrypted::<CertificateInfo>::from_bytes(bytes)
+                        .open(cipher, &HTTP_INFO_CERTIFICATE)
+                        .ok()
+                });
+                let status_code = u16::try_from(status).unwrap_or(0);
+                let info = HttpInfo {
+                    url,
+                    status_code,
+                    title,
+                    headers,
+                    cookies,
+                    redirect_chain,
+                    tls_verified,
+                    certificate,
+                    favicon: favicon.and_then(|json| serde_json::from_str(&json).ok()),
+                    simhash,
+                    response_ms: response_ms.and_then(|ms| u32::try_from(ms).ok()),
+                };
+                (id, info)
+            },
+        )
+        .collect();
+    let mut detections_by_service: HashMap<i64, Vec<Detection>> = HashMap::new();
+    for (service_id, technology, version, confidence, evidence) in detections {
+        let evidence: Vec<Evidence> = serde_json::from_str(&evidence).unwrap_or_default();
+        detections_by_service
+            .entry(service_id)
+            .or_default()
+            .push(Detection {
+                technology,
+                version,
+                confidence: u8::try_from(confidence).unwrap_or(0),
+                evidence,
+            });
+    }
+    let mut services_by_host: HashMap<i64, Vec<Service>> = HashMap::new();
+    for (id, host_id, port, protocol, state, name, product, version, cpe) in services {
+        let Ok(port) = u16::try_from(port) else {
+            continue;
+        };
+        let protocol = if protocol == "udp" {
+            Protocol::Udp
+        } else {
+            Protocol::Tcp
+        };
+        let state = match state.as_str() {
+            "open" => ServiceState::Open,
+            "closed" => ServiceState::Closed,
+            _ => ServiceState::Filtered,
+        };
+        let mut service = Service::new(port, protocol, state);
+        service.name = name;
+        service.product = product;
+        service.version = version;
+        service.cpe = cpe;
+        service.http = http_by_service.remove(&id);
+        service.detections = detections_by_service.remove(&id).unwrap_or_default();
+        services_by_host.entry(host_id).or_default().push(service);
+    }
+    hosts
+        .into_iter()
+        .map(|(id, ip, hostnames, status, first_seen, last_seen)| {
+            let mut host = Host::new(ip, first_seen);
+            host.last_seen = last_seen;
+            host.hostnames = hostnames;
+            host.status = match status.as_str() {
+                "inactive" => HostStatus::Inactive,
+                "unstable" => HostStatus::Unstable,
+                _ => HostStatus::Active,
+            };
+            host.services = services_by_host.remove(&id).unwrap_or_default();
+            host
+        })
+        .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn set_cookie_value_is_masked() {
+        let header = |value: &str| HttpHeader {
+            name: "Set-Cookie".into(),
+            value: value.into(),
+        };
+        assert_eq!(
+            mask_set_cookie(header("PHPSESSID=abc123; Path=/; HttpOnly")).value,
+            "PHPSESSID=***; Path=/; HttpOnly"
+        );
+        assert_eq!(mask_set_cookie(header("sid=xyz")).value, "sid=***");
+        let other = HttpHeader {
+            name: "Server".into(),
+            value: "nginx".into(),
+        };
+        assert_eq!(mask_set_cookie(other).value, "nginx");
+    }
+}

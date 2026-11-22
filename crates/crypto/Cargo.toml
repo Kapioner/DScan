@@ -1,0 +1,15 @@
+[package]
+name = "dscan-crypto"
+description = "Szyfrowanie pól wrażliwych DScan: AES-256-GCM z losowym nonce dla każdego rekordu."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+aes-gcm.workspace = true
+sha2.workspace = true
+
+[lints]
+workspace = true

@@ -1,0 +1,29 @@
+[package]
+name = "dscan-fingerprint"
+description = "Fingerprinting usług DScan: klient HTTP/HTTPS, ekstrakcja informacji HTTP, limiter zapytań."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+
+[dependencies]
+dscan-core.workspace = true
+governor.workspace = true
+reqwest.workspace = true
+scraper.workspace = true
+serde.workspace = true
+serde_yaml.workspace = true
+regex.workspace = true
+rustls.workspace = true
+tokio-rustls.workspace = true
+x509-parser.workspace = true
+sha2.workspace = true
+chrono.workspace = true
+tokio.workspace = true
+
+[dev-dependencies]
+axum.workspace = true
+
+[lints]
+workspace = true
